@@ -28,13 +28,20 @@ References:
 
 Replace code below according to your needs.
 """
+import numpy as np
+import cv2
+import logging
+import napari
+from magicgui import magicgui
+from napari.types import ImageData
 from typing import TYPE_CHECKING
-
+from aicssegmentation.core.vessel import filament_2d_wrapper
+from aicssegmentation.core.pre_processing_utils import intensity_normalization, image_smoothing_gaussian_3d, edge_preserving_smoothing_3d
+from skimage.morphology import remove_small_objects
 from magicgui import magic_factory
 from magicgui.widgets import CheckBox, Container, create_widget
 from qtpy.QtWidgets import QHBoxLayout, QPushButton, QWidget
 from skimage.util import img_as_float
-
 if TYPE_CHECKING:
     import napari
 
@@ -126,3 +133,153 @@ class ExampleQWidget(QWidget):
 
     def _on_click(self):
         print("napari has", len(self.viewer.layers), "layers")
+
+
+import numpy as np
+import napari
+from qtpy.QtWidgets import QWidget, QPushButton, QVBoxLayout, QLabel, QDoubleSpinBox, QSpinBox
+from aicssegmentation.core.vessel import filament_2d_wrapper
+from aicssegmentation.core.pre_processing_utils import (
+    intensity_normalization,
+    image_smoothing_gaussian_3d
+)
+from skimage.morphology import remove_small_objects
+
+class SegmentWidget(QWidget):
+    def __init__(self, viewer: "napari.viewer.Viewer"):
+        super().__init__()
+        self.viewer = viewer
+        self.img_layer = None
+        
+        # Create labels and input widgets
+        self.intensity_scaling_param_min_spinbox = QDoubleSpinBox()
+        self.intensity_scaling_param_min_spinbox.setMinimum(0.0)
+        self.intensity_scaling_param_min_spinbox.setMaximum(100.0)
+        self.intensity_scaling_param_min_spinbox.setValue(0.0)
+        
+        self.intensity_scaling_param_max_spinbox = QDoubleSpinBox()
+        self.intensity_scaling_param_max_spinbox.setMinimum(0.0)
+        self.intensity_scaling_param_max_spinbox.setMaximum(100.0)
+        self.intensity_scaling_param_max_spinbox.setValue(100.0)
+        
+        self.gaussian_smoothing_sigma_spinbox = QDoubleSpinBox()
+        self.gaussian_smoothing_sigma_spinbox.setMinimum(0.0)
+        self.gaussian_smoothing_sigma_spinbox.setMaximum(10.0)
+        self.gaussian_smoothing_sigma_spinbox.setValue(1.0)
+        
+        self.f2_param_first_spinbox = QDoubleSpinBox()
+        self.f2_param_first_spinbox.setMinimum(0.0)
+        self.f2_param_first_spinbox.setMaximum(10.0)
+        self.f2_param_first_spinbox.setValue(1.0)
+        
+        self.f2_param_second_spinbox = QDoubleSpinBox()
+        self.f2_param_second_spinbox.setMinimum(0.0)
+        self.f2_param_second_spinbox.setMaximum(10.0)
+        self.f2_param_second_spinbox.setValue(0.5)
+        
+        self.minArea_spinbox = QSpinBox()
+        self.minArea_spinbox.setMinimum(0)
+        self.minArea_spinbox.setMaximum(1000)
+        self.minArea_spinbox.setValue(10)
+        
+        # Create button
+        self.segment_button = QPushButton("Segment Image")
+        self.segment_button.clicked.connect(self.segment_image)
+        
+        # Create layout
+        layout = QVBoxLayout()
+        layout.addWidget(QLabel("Intensity Scaling Param Min"))
+        layout.addWidget(self.intensity_scaling_param_min_spinbox)
+        layout.addWidget(QLabel("Intensity Scaling Param Max"))
+        layout.addWidget(self.intensity_scaling_param_max_spinbox)
+        layout.addWidget(QLabel("Gaussian Smoothing Sigma"))
+        layout.addWidget(self.gaussian_smoothing_sigma_spinbox)
+        layout.addWidget(QLabel("F2 Param First"))
+        layout.addWidget(self.f2_param_first_spinbox)
+        layout.addWidget(QLabel("F2 Param Second"))
+        layout.addWidget(self.f2_param_second_spinbox)
+        layout.addWidget(QLabel("Min Area"))
+        layout.addWidget(self.minArea_spinbox)
+        layout.addWidget(self.segment_button)
+        
+        self.setLayout(layout)
+        
+        # Connect the layer change event to the update function
+        self.viewer.layers.events.changed.connect(self.update_image_layer)
+        
+        # Manually set the image layer if one exists
+        self.update_image_layer(None)
+        
+    def update_image_layer(self, event):
+        # Check if there are any image layers and set the latest one
+        print("Checking layers in the viewer...")
+        for layer in self.viewer.layers:
+            print("Layer:", layer, "Type:", type(layer))
+            if isinstance(layer, napari.layers.Image):
+                self.set_image_layer(layer)
+                break
+        print("Update image layer called. Current image layer:", self.img_layer)
+        
+    def set_image_layer(self, img_layer):
+        self.img_layer = img_layer
+        print("Image layer set to:", self.img_layer)
+        
+    def segment_image(self):
+        if self.img_layer is None:
+            print("No image layer set!")
+            return
+        
+        print("Segmenting image...")
+        
+        # Get parameter values from the widgets
+        intensity_scaling_param_min = self.intensity_scaling_param_min_spinbox.value()
+        intensity_scaling_param_max = self.intensity_scaling_param_max_spinbox.value()
+        gaussian_smoothing_sigma = self.gaussian_smoothing_sigma_spinbox.value()
+        f2_param_first = self.f2_param_first_spinbox.value()
+        f2_param_second = self.f2_param_second_spinbox.value()
+        minArea = self.minArea_spinbox.value()
+
+        # Preprocessing
+        image_data = self.img_layer.data
+        print("Image data shape:", image_data.shape)
+        struct_img0 = image_data.astype(np.float32)
+        
+        if intensity_scaling_param_max == 0:
+            struct_img = intensity_normalization(struct_img0, scaling_param=[intensity_scaling_param_min])
+        elif intensity_scaling_param_max > 0:
+            struct_img = intensity_normalization(struct_img0, scaling_param=[intensity_scaling_param_min, intensity_scaling_param_max])
+
+        structure_img_smooth = image_smoothing_gaussian_3d(struct_img, sigma=gaussian_smoothing_sigma)
+        
+        # Print the shape of the smoothed image
+        print("Smoothed image shape:", structure_img_smooth.shape)
+        
+        # Thresholding and Segmentation
+        # Adjust the parameter format to match what filament_2d_wrapper expects
+        f2_param = [[f2_param_first, f2_param_second]]
+        bw = filament_2d_wrapper(structure_img_smooth, f2_param)
+        
+        # Remove small objects
+        seg = remove_small_objects(bw > 0, min_size=minArea, connectivity=1)
+        
+        # Ensure the output is correctly formatted
+        labeled_image = seg.astype(np.uint32)
+        
+        print("Segmentation completed.")
+        
+        # Display or use the segmentation result as needed
+        self.viewer.add_labels(labeled_image)
+
+# Function to return the SegmentWidget instance as a QWidget
+def create_segment_widget(viewer):
+    return SegmentWidget(viewer)
+
+# Create the Napari viewer
+viewer = napari.Viewer()
+
+# Add the segment widget to Napari viewer
+widget = create_segment_widget(viewer)
+viewer.window.add_dock_widget(widget)
+
+# Run Napari
+napari.run()

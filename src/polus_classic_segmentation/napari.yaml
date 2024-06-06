@@ -27,6 +27,10 @@ contributions:
     - id: polus-classic-segmentation.make_qwidget
       python_name: polus_classic_segmentation:ExampleQWidget
       title: Make example QWidget
+    - id: polus-classic-segmentation.my_widget
+      python_name: polus_classic_segmentation._widget:SegmentWidget
+      title: Segmentation
+
   readers:
     - command: polus-classic-segmentation.get_reader
       accepts_directories: false
@@ -48,3 +52,5 @@ contributions:
       display_name: Autogenerate Threshold
     - command: polus-classic-segmentation.make_qwidget
       display_name: Example QWidget
+    - command: polus-classic-segmentation.my_widget
+      display_name: Classic Segmentations
