@@ -1,77 +1,76 @@
 import numpy as np
-import cv2
+import h5py
+import logging
 import os
-import logging, sys
-from bfio import BioReader, BioWriter
-from pathlib import Path
-from aicsimageio import AICSImage
-from aicssegmentation.core.seg_dot import dot_3d, dot_3d_wrapper 
+from aicssegmentation.core.seg_dot import dot_3d_wrapper
 from aicssegmentation.core.pre_processing_utils import intensity_normalization, image_smoothing_gaussian_slice_by_slice, image_smoothing_gaussian_3d
-from skimage.morphology import remove_small_objects, watershed, dilation, erosion, ball
+from skimage.morphology import remove_small_objects, dilation, ball
 from skimage.feature import peak_local_max
 from skimage.measure import label
 from scipy.ndimage import distance_transform_edt
+from skimage.segmentation import watershed
+from skimage.io import imsave
 
+def segment_image_3d(image: np.ndarray, config_data: dict) -> np.ndarray:
+    """ Main segmentation algorithm for 3D images """
 
-def segment_images(inpDir, outDir, config_data):  
-    """ Workflow for dot like shapes such as
-    Centrin-2, Desmoplakin, PMP34. 
+    struct_img0 = image.astype(np.float32)
 
-    Args:
-        inpDir : path to the input directory
-        outDir : path to the output directory
-        config_data : path to the configuration file
-    """
-
-    logging.basicConfig(format='%(asctime)s - %(name)-8s - %(levelname)-8s - %(message)s',
-                        datefmt='%d-%b-%y %H:%M:%S')
-    logger = logging.getLogger("main")
-    logger.setLevel(logging.INFO)
-
-    inpDir_files = os.listdir(inpDir)
-    for i,f in enumerate(inpDir_files):
-        logger.info('Segmenting image : {}'.format(f))
+    # Intensity normalization
+    intensity_scaling_param = config_data['intensity_scaling_param']
+    struct_img = intensity_normalization(struct_img0, scaling_param=intensity_scaling_param)
         
-        # Load an image
-        br = BioReader(os.path.join(inpDir,f))
-        image = br.read_image()
-        structure_channel = 0 
-        struct_img0 = image[:,:,:,structure_channel,0]
-        struct_img0 = struct_img0.transpose(2,0,1).astype(np.float32)
+    # Gaussian smoothing
+    gaussian_smoothing_sigma = config_data['gaussian_smoothing_sigma']
+    if config_data["gaussian_smoothing"] == "gaussian_slice_by_slice":
+        structure_img_smooth = image_smoothing_gaussian_slice_by_slice(struct_img, sigma=gaussian_smoothing_sigma)
+    else:
+        structure_img_smooth = image_smoothing_gaussian_3d(struct_img, sigma=gaussian_smoothing_sigma)    
+    
+    # Dot segmentation
+    s3_param = config_data['s3_param']
+    bw = dot_3d_wrapper(structure_img_smooth, s3_param)
+    
+    # Post-processing
+    minArea = config_data['minArea']
+    Mask = remove_small_objects(bw > 0, min_size=minArea, connectivity=1, in_place=False)
+    Seed = dilation(peak_local_max(struct_img, labels=label(Mask), min_distance=2, indices=False), selem=ball(1))
+    Watershed_Map = -1 * distance_transform_edt(bw)
+    seg = watershed(Watershed_Map, label(Seed), mask=Mask, watershed_line=True)
+    seg = remove_small_objects(seg > 0, min_size=minArea, connectivity=1, in_place=False)
+    seg = seg > 0
 
-        # main algorithm
-        intensity_scaling_param = config_data['intensity_scaling_param']
-        struct_img = intensity_normalization(struct_img0, scaling_param=intensity_scaling_param)
-            
-        gaussian_smoothing_sigma = config_data['gaussian_smoothing_sigma'] 
-        if config_data["gaussian_smoothing"] == "gaussian_slice_by_slice":
-            structure_img_smooth = image_smoothing_gaussian_slice_by_slice(struct_img, sigma=gaussian_smoothing_sigma)
-        else:
-            structure_img_smooth = image_smoothing_gaussian_3d(struct_img, sigma=gaussian_smoothing_sigma)    
-        s3_param = config_data['s3_param']
-        bw = dot_3d_wrapper(structure_img_smooth, s3_param)
-        minArea = config_data['minArea']
-        Mask = remove_small_objects(bw>0, min_size=minArea, connectivity=1, in_place=False) 
-        Seed = dilation(peak_local_max(struct_img,labels=label(Mask), min_distance=2, indices=False), selem=ball(1))
-        Watershed_Map = -1*distance_transform_edt(bw)
-        seg = watershed(Watershed_Map, label(Seed), mask=Mask, watershed_line=True)
-        seg = remove_small_objects(seg>0, min_size=minArea, connectivity=1, in_place=False)
-        seg = seg >0
-        out_img=seg.astype(np.uint8)
-        out_img[out_img>0]=255
+    out_img = seg.astype(np.uint8)
+    out_img[out_img > 0] = 255
 
-        # create output image
-        out_img = out_img.transpose(1,2,0)
-        out_img = out_img.reshape((out_img.shape[0], out_img.shape[1], out_img.shape[2], 1, 1))
+    return out_img
 
-        # write image using BFIO
-        bw = BioWriter(os.path.join(outDir,f), metadata=br.read_metadata())
-        bw.num_x(out_img.shape[1])
-        bw.num_y(out_img.shape[0])
-        bw.num_z(out_img.shape[2])
-        bw.num_c(out_img.shape[3])
-        bw.num_t(out_img.shape[4])
-        bw.pixel_type(dtype='uint8')
-        bw.write_image(out_img)
-        bw.close_image()
-             
+def save_image_as_hdf5(image: np.ndarray, file_path: str):
+    """ Save the image as an HDF5 file """
+    with h5py.File(file_path, 'w') as f:
+        f.create_dataset('image', data=image)
+
+# Define your input 3D image data (path to the previously generated HDF5 file)
+input_path = '/Users/Gabrielle/Downloads/test_3d_image.h5'
+
+# Define your parameter values
+config_data = {
+    'intensity_scaling_param': [0, 100],
+    'gaussian_smoothing_sigma': 2.0,
+    'gaussian_smoothing': 'gaussian_3d',  # or 'gaussian_slice_by_slice'
+    's3_param': [[1.0, 0.5]],  # Adjust as needed
+    'minArea': 10
+}
+
+# Load the 3D image from the HDF5 file
+with h5py.File(input_path, 'r') as f:
+    image = f['image'][:]
+
+# Perform segmentation
+segmented_image = segment_image_3d(image, config_data)
+
+# Save the segmented image to an HDF5 file
+output_path = '/mnt/data/segmented_3d_image.h5'
+save_image_as_hdf5(segmented_image, output_path)
+
+output_path
