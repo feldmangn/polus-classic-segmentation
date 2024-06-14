@@ -1,71 +1,64 @@
+import os
 import numpy as np
-import cv2
-from aicssegmentation.core.vessel import filament_2d_wrapper
-from aicssegmentation.core.pre_processing_utils import intensity_normalization, image_smoothing_gaussian_3d, edge_preserving_smoothing_3d
+import logging
+import imageio
 from skimage.morphology import remove_small_objects
-from napari_plugin_engine import napari_hook_implementation
-from magicgui import magicgui
-from qtpy.QtWidgets import QWidget, QVBoxLayout, QLabel
-import numpy as np
-from napari import Viewer
+from aicssegmentation.core.seg_dot import dot_2d_slice_by_slice_wrapper
+from aicssegmentation.core.pre_processing_utils import intensity_normalization, image_smoothing_gaussian_3d
 
+def segment_images(inpDir, outDir, config_data):
+    """ Workflow for data with a spotty appearance
+    in each 2d frame such as fibrillarin and beta catenin.
 
+    Args:
+        inpDir : path to the input directory
+        outDir : path to the output directory
+        config_data : configuration data
+    """
 
-def segment_image(image: np.ndarray, intensity_scaling_param: list, gaussian_smoothing_sigma: float, f2_param: list, minArea: int, preprocessing_function: str) -> np.ndarray:
-        structure_channel = 0
-        struct_img0 = image[..., structure_channel]
-        struct_img0 = struct_img0.astype(np.float32)
+    logging.basicConfig(format='%(asctime)s - %(name)-8s - %(levelname)-8s - %(message)s',
+                        datefmt='%d-%b-%y %H:%M:%S')
+    logger = logging.getLogger("main")
+    logger.setLevel(logging.INFO)
+
+    inpDir_files = os.listdir(inpDir)
+    for i, f in enumerate(inpDir_files):
+        logger.info('Segmenting image : {}'.format(f))
+
+        # Load image
+        img_path = os.path.join(inpDir, f)
+        image = imageio.v2.imread(img_path)
+        if image.ndim == 3:
+            image = image[:, :, 0]  # Take the first channel if it's a color image
+        if image.ndim == 2:
+            image = np.expand_dims(image, axis=0)  # Make it 3D with one slice
+        struct_img0 = image.astype(np.float32)
 
         # Main algorithm
-        if intensity_scaling_param[1] == 0:
-            struct_img = intensity_normalization(struct_img0, scaling_param=intensity_scaling_param[:1])
-        else:
-            struct_img = intensity_normalization(struct_img0, scaling_param=intensity_scaling_param)
-        
-        if preprocessing_function == 'image_smoothing_gaussian_3d':
-            structure_img_smooth = image_smoothing_gaussian_3d(struct_img, sigma=gaussian_smoothing_sigma)
-        elif preprocessing_function == 'edge_preserving_smoothing_3d':
-            structure_img_smooth = edge_preserving_smoothing_3d(struct_img)
-        
-        bw = filament_2d_wrapper(structure_img_smooth, f2_param)
-        
+        intensity_scaling_param = config_data['intensity_scaling_param']
+        struct_img = intensity_normalization(struct_img0, scaling_param=intensity_scaling_param) 
+        gaussian_smoothing_sigma = config_data['gaussian_smoothing_sigma'] 
+        structure_img_smooth = image_smoothing_gaussian_3d(struct_img, sigma=gaussian_smoothing_sigma)
+        s2_param = [config_data['s2_param']]  # Ensure it's in the correct format
+        bw = dot_2d_slice_by_slice_wrapper(structure_img_smooth, s2_param)
+        minArea = config_data['minArea']
         seg = remove_small_objects(bw > 0, min_size=minArea, connectivity=1)
         seg = seg > 0
+        out_img = seg.astype(np.uint8)
+        out_img[out_img > 0] = 255
 
-        out_img = seg.astype(np.uint8) * 255
-        
-        return out_img
+        # Save output image
+        out_img_path = os.path.join(outDir, f)
+        imageio.imwrite(out_img_path, out_img.squeeze())  # Squeeze to remove single-dimensional entries
 
-# Define your image data
-image = cv2.imread('/Users/Gabrielle/Desktop/cameraman.png')
+# Example usage
+config_data = {
+    'intensity_scaling_param': [0.0, 100.0],
+    'gaussian_smoothing_sigma': 1.0,
+    's2_param': [1.0, 1.0],  # Example parameter values
+    'minArea': 10
+}
+inpDir = '/Users/Gabrielle/Desktop/Test'
+outDir = '/Users/Gabrielle/Desktop/cnn'
 
-# Define your parameter values
-# Corrected f2_param to be a list of lists with two elements each
-f2_param = [[1.0, 0.5]]
-intensity_scaling_param = [0, 100]
-gaussian_smoothing_sigma = 2.0
-minArea = 10
-preprocessing_function = 'image_smoothing_gaussian_3d'
-
-# Call the segment_image function
-segmented_image = segment_image(image, intensity_scaling_param, gaussian_smoothing_sigma, f2_param, minArea, preprocessing_function)
-
-# Now you have your segmented image
-import matplotlib.pyplot as plt
-
-# Plot both images
-plt.figure(figsize=(10, 5))
-
-# Original Image
-plt.subplot(1, 2, 1)
-plt.imshow(image, cmap='gray')
-plt.title('Original Image')
-plt.axis('off')
-
-# Segmented Image
-plt.subplot(1, 2, 2)
-plt.imshow(segmented_image, cmap='gray')
-plt.title('Segmented Image')
-plt.axis('off')
-
-plt.show()
+segment_images(inpDir, outDir, config_data)
