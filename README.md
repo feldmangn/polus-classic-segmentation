@@ -8,6 +8,18 @@
 [![napari hub](https://img.shields.io/endpoint?url=https://api.napari-hub.org/shields/polus-classic-segmentation)](https://napari-hub.org/plugins/polus-classic-segmentation)
 
 Classic sergmentation module from Polus
+The following models from PolusAI are featured in this plugin:
+
+Polus Cell Nuclei Segmentation
+Original Code used for WIPP Plugin "Cell Nuclei Segmentation using U-net"
+Their model features the neural network and model weights from https://github.com/axium/Data-Science-Bowl-2018/. This original model has been modified to use reflective padding to make the dimension a multiple of 256. Then, the loop extracts 256x256 tiles to be processed by the network. Then, it untiles and removes the padding from the output.
+
+Curvy Linear
+Workflow for curvilinear shapes such as: Sec61 beta, TOM20, lamin B1 (mitosis specific)
+
+Spotty
+Workflow for data with a spotty appearance in each 2d frame such as fibrillarin and beta catenin.
+
 
 ----------------------------------
 
